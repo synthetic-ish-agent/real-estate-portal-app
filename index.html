@@ -1,0 +1,867 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Multi-Role Property Portal</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Load React, React DOM, and Babel -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Load Firebase -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, query, onSnapshot, addDoc, updateDoc, doc, deleteDoc, getDocs, setLogLevel, serverTimestamp, where } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        
+        // Set log level for debugging
+        setLogLevel('Debug');
+
+        // Expose Firebase functions globally for use in the Babel script block
+        window.firebase = {
+            initializeApp, getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged,
+            getFirestore, collection, query, onSnapshot, addDoc, updateDoc, doc, deleteDoc, getDocs, serverTimestamp, where
+        };
+
+        // Global variables provided by the environment
+        window.__app_id = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        window.__firebase_config = typeof __firebase_config !== 'undefined' ? __firebase_config : '{}';
+        window.__initial_auth_token = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        const firebaseConfig = JSON.parse(window.__firebase_config);
+        if (Object.keys(firebaseConfig).length) {
+            initializeApp(firebaseConfig);
+        }
+    </script>
+</head>
+<body class="bg-gray-50 min-h-screen font-sans antialiased">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo, useCallback } = React;
+        const { 
+            initializeApp, getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged,
+            getFirestore, collection, query, onSnapshot, addDoc, updateDoc, doc, deleteDoc, getDocs, serverTimestamp, where
+        } = window.firebase;
+
+        // --- CONFIGURATION CONSTANTS (Must be defined globally for the app) ---
+        const LISTING_STATUSES = ['For Sale', 'Pending', 'Sold', 'Rented'];
+        const CLIENT_STATUSES = ['New Lead', 'Active Buyer', 'Viewing Properties', 'Offer Submitted', 'Closed'];
+        const PROPERTY_TYPES = ['House', 'Condo', 'Land', 'Commercial'];
+        const ROLES = ['Agent', 'Owner', 'Buyer'];
+
+        const LISTING_STATUS_COLORS = {
+            'For Sale': 'bg-emerald-500',
+            'Pending': 'bg-amber-500',
+            'Sold': 'bg-red-500',
+            'Rented': 'bg-blue-500',
+        };
+
+        const CLIENT_STATUS_COLORS = {
+            'New Lead': 'bg-gray-500',
+            'Active Buyer': 'bg-indigo-500',
+            'Viewing Properties': 'bg-teal-500',
+            'Offer Submitted': 'bg-green-600',
+            'Closed': 'bg-red-500',
+        };
+
+        if (typeof window.firebaseInitialized === 'undefined') {
+
+        // Placeholder for required global variables from the Canvas environment
+        const appId = window.__app_id;
+        const firebaseConfig = JSON.parse(window.__firebase_config);
+        const initialAuthToken = window.__initial_auth_token;
+
+        // Helper function to handle Firestore path generation for collections
+        const getPrivateCollectionPath = (userId, collectionName) =>
+            `/artifacts/${appId}/users/${userId}/${collectionName}`;
+
+        const getPublicCollectionPath = (collectionName) =>
+            `/artifacts/${appId}/public/data/${collectionName}`;
+
+        const formatPrice = (price) => new Intl.NumberFormat('en-US', {
+            style: 'currency',
+            currency: 'USD',
+            minimumFractionDigits: 0,
+            maximumFractionDigits: 0,
+        }).format(price);
+
+
+        // --- Custom Hooks ---
+
+        const useFirebase = () => {
+            const [db, setDb] = useState(null);
+            const [userId, setUserId] = useState(null);
+            const [isAuthReady, setIsAuthReady] = useState(false);
+
+            useEffect(() => {
+                if (!Object.keys(firebaseConfig).length) {
+                    console.error("Firebase config is missing.");
+                    return;
+                }
+
+                try {
+                    const app = initializeApp(firebaseConfig);
+                    const firestore = getFirestore(app);
+                    const authentication = getAuth(app);
+
+                    setDb(firestore);
+
+                    const signInAndObserve = async () => {
+                        if (initialAuthToken) {
+                            await signInWithCustomToken(authentication, initialAuthToken);
+                        } else {
+                            await signInAnonymously(authentication);
+                        }
+                        
+                        const unsubscribe = onAuthStateChanged(authentication, (user) => {
+                            if (user) {
+                                setUserId(user.uid);
+                            } else {
+                                setUserId(null); 
+                            }
+                            setIsAuthReady(true);
+                        });
+                        return () => unsubscribe();
+                    };
+
+                    signInAndObserve();
+
+                } catch (error) {
+                    console.error("Failed to initialize or authenticate Firebase:", error);
+                    setIsAuthReady(true);
+                }
+            }, []);
+
+            return { db, userId, isAuthReady };
+        };
+
+
+        // --- UI Components: Shared Elements ---
+
+        const Icon = ({ path, className = "w-6 h-6" }) => (
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className={className}>
+                <path strokeLinecap="round" strokeLinejoin="round" d={path} />
+            </svg>
+        );
+
+        const LoadingOverlay = () => (
+            <div className="flex justify-center items-center h-screen">
+                <div className="text-2xl font-semibold text-indigo-700 p-8 bg-white rounded-xl shadow-2xl animate-pulse flex items-center space-x-3">
+                    <Icon path="M16.023 9.348h4.992v-.001m-4.992 0h-4.992m0 0l-1.002 1.002m1.002-1.002l1.002-1.002m0 0l-1.002-1.002m1.002 1.002l1.002 1.002m-1.002-1.002z" className="w-8 h-8 animate-spin" />
+                    <span>Connecting to Real Estate Network...</span>
+                </div>
+            </div>
+        );
+
+        const LinkingModal = ({ title, onClose, children }) => (
+            <div className="fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center p-4 z-50 transition-opacity duration-300">
+                <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg p-6 max-h-[90vh] overflow-y-auto">
+                    <div className="flex justify-between items-center border-b pb-3 mb-4">
+                        <h2 className="text-2xl font-bold text-gray-800">{title}</h2>
+                        <button 
+                            onClick={onClose} 
+                            className="text-gray-400 hover:text-gray-600 transition p-1"
+                            aria-label="Close modal"
+                        >
+                            <Icon path="M6 18L18 6M6 6l12 12" className="w-6 h-6" />
+                        </button>
+                    </div>
+                    {children}
+                </div>
+            </div>
+        );
+        
+        const MessageToast = ({ message, setMessage }) => {
+            useEffect(() => {
+                if (message) {
+                    const timer = setTimeout(() => {
+                        setMessage(null);
+                    }, 3000);
+                    return () => clearTimeout(timer);
+                }
+            }, [message, setMessage]);
+
+            if (!message) return null;
+
+            const baseStyle = "fixed bottom-5 right-5 p-4 rounded-xl shadow-xl text-white font-medium z-50 transition-opacity duration-300";
+            const typeStyle = message.type === 'success' 
+                ? 'bg-green-500' 
+                : 'bg-red-600';
+
+            return (
+                <div className={`${baseStyle} ${typeStyle}`}>
+                    {message.text}
+                </div>
+            );
+        };
+
+
+        // --- Component: Listing Card (Reused) ---
+
+        const ListingCard = ({ listing, userId, db, handleDeleteDoc, handleUpdateDoc, isAgent }) => {
+            const statusColor = LISTING_STATUS_COLORS[listing.status] || 'bg-gray-500';
+
+            const handleStatusChange = (e) => {
+                const newStatus = e.target.value;
+                if (newStatus) {
+                    handleUpdateDoc(getPublicCollectionPath('listings'), listing.id, { status: newStatus });
+                }
+            };
+            
+            const isOwnerOrAgent = listing.agentId === userId;
+
+            return (
+                <div className="card p-4 flex flex-col justify-between h-full hover:shadow-xl transition">
+                    <div>
+                        <div className="flex justify-between items-start mb-2">
+                            <span className={`text-xs font-semibold px-3 py-1 rounded-full ${statusColor} text-white`}>
+                                {listing.status}
+                            </span>
+                             <span className="text-xs text-gray-400 border border-gray-200 px-2 py-0.5 rounded-lg">
+                                {listing.type}
+                            </span>
+                        </div>
+                        <h3 className="text-xl font-bold text-gray-800 mb-1">{listing.address}</h3>
+                        <p className="text-2xl font-extrabold text-indigo-600 mb-3">{formatPrice(listing.price)}</p>
+                        <p className="text-sm text-gray-500 mb-3">Agent ID: {listing.agentId.substring(0, 8)}...</p>
+                    </div>
+
+                    {(isAgent && isOwnerOrAgent) && (
+                        <div className="mt-3 pt-3 border-t border-gray-100 space-y-2">
+                            <select 
+                                value={listing.status} 
+                                onChange={handleStatusChange} 
+                                className="input-group select text-sm"
+                                disabled={listing.status === 'Sold' || listing.status === 'Rented'}
+                            >
+                                {LISTING_STATUSES.map(status => (
+                                    <option key={status} value={status}>{status}</option>
+                                ))}
+                            </select>
+                            <button 
+                                onClick={() => handleDeleteDoc(getPublicCollectionPath('listings'), listing.id)}
+                                className="w-full text-xs font-medium py-2 rounded-lg bg-red-100 text-red-600 hover:bg-red-200 transition"
+                            >
+                                <Icon path="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.668.216.96.419a.7.7 0 011.086 1.05L18.42 16.5m-5.414 1.5H8.574a.75.75 0 01-.645-.371L3.5 12.5" className="w-4 h-4 inline-block mr-1" />
+                                Delete Listing
+                            </button>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+
+        // --- Component: Add Client Form (Agent Private) ---
+
+        const AddClientForm = ({ newClient, setNewClient, handleAddDoc, userId, db }) => {
+            const handleChange = (e) => {
+                const { name, value } = e.target;
+                setNewClient(prev => ({ ...prev, [name]: value }));
+            };
+
+            const handleSubmit = async (e) => {
+                e.preventDefault();
+                await handleAddDoc(getPrivateCollectionPath(userId, 'clients'), {
+                    ...newClient,
+                    agentId: userId,
+                });
+                setNewClient({ name: '', email: '', phone: '', status: 'New Lead' });
+            };
+
+            return (
+                <form onSubmit={handleSubmit} className="p-6 space-y-4 card">
+                    <h3 className="text-xl font-semibold text-gray-800 border-b pb-2">Add New Client</h3>
+                    <div className="input-group">
+                        <label className="text-sm font-medium text-gray-700">Client Name</label>
+                        <input type="text" name="name" value={newClient.name} onChange={handleChange} required />
+                    </div>
+                    <div className="input-group">
+                        <label className="text-sm font-medium text-gray-700">Email</label>
+                        <input type="email" name="email" value={newClient.email} onChange={handleChange} required />
+                    </div>
+                    <div className="input-group">
+                        <label className="text-sm font-medium text-gray-700">Phone</label>
+                        <input type="tel" name="phone" value={newClient.phone} onChange={handleChange} />
+                    </div>
+                    <div className="input-group">
+                        <label className="text-sm font-medium text-gray-700">Status</label>
+                        <select name="status" value={newClient.status} onChange={handleChange}>
+                            {CLIENT_STATUSES.map(status => <option key={status} value={status}>{status}</option>)}
+                        </select>
+                    </div>
+                    <button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2.5 rounded-lg transition">
+                        Add Client
+                    </button>
+                </form>
+            );
+        };
+
+
+        // --- Component: Client Card (Agent Private) ---
+
+        const ClientCard = ({ client, userId, db, handleDeleteDoc, handleUpdateDoc, setSelectedClient, setIsLinkingModalOpen }) => {
+            const statusColor = CLIENT_STATUS_COLORS[client.status] || 'bg-gray-500';
+
+            const handleStatusChange = (e) => {
+                const newStatus = e.target.value;
+                handleUpdateDoc(getPrivateCollectionPath(userId, 'clients'), client.id, { status: newStatus });
+            };
+
+            const openLinkModal = () => {
+                setSelectedClient(client);
+                setIsLinkingModalOpen(true);
+            };
+
+            return (
+                <div className="card p-4 border-l-4 border-indigo-500 flex flex-col justify-between">
+                    <div>
+                        <div className="flex justify-between items-center mb-2">
+                             <span className={`text-xs font-semibold px-3 py-1 rounded-full ${statusColor} text-white`}>
+                                {client.status}
+                            </span>
+                            <button 
+                                onClick={openLinkModal}
+                                className="text-xs text-indigo-500 hover:text-indigo-700 font-medium flex items-center"
+                            >
+                                <Icon path="M13.19 8.659a.75.75 0 001.06 1.06l3.92-3.92a.75.75 0 000-1.06l-3.92-3.92a.75.75 0 00-1.06 1.06l3.41 3.41-3.41 3.41zM6.81 15.341a.75.75 0 00-1.06-1.06l-3.92 3.92a.75.75 0 000 1.06l3.92 3.92a.75.75 0 001.06-1.06l-3.41-3.41 3.41-3.41z" className="w-4 h-4 mr-1" />
+                                Link Listing
+                            </button>
+                        </div>
+                        <h3 className="text-lg font-bold text-gray-800">{client.name}</h3>
+                        <p className="text-sm text-gray-600">{client.email}</p>
+                        <p className="text-sm text-gray-600">{client.phone}</p>
+                    </div>
+
+                    <div className="mt-3 pt-3 border-t border-gray-100 flex space-x-2">
+                         <select value={client.status} onChange={handleStatusChange} className="input-group select text-sm w-full">
+                            {CLIENT_STATUSES.map(status => <option key={status} value={status}>{status}</option>)}
+                        </select>
+                         <button 
+                            onClick={() => handleDeleteDoc(getPrivateCollectionPath(userId, 'clients'), client.id)}
+                            className="p-2 rounded-lg bg-red-100 text-red-600 hover:bg-red-200 transition"
+                        >
+                            <Icon path="M6 18L18 6M6 6l12 12" className="w-4 h-4" />
+                        </button>
+                    </div>
+                </div>
+            );
+        };
+
+
+        // --- Component: Add Listing Form (Agent/Owner Public) ---
+
+        const AddListingForm = ({ newListing, setNewListing, handleAddDoc, userId, db }) => {
+            const handleChange = (e) => {
+                const { name, value } = e.target;
+                setNewListing(prev => ({ ...prev, [name]: value }));
+            };
+
+            const handleSubmit = async (e) => {
+                e.preventDefault();
+                await handleAddDoc(getPublicCollectionPath('listings'), {
+                    ...newListing,
+                    price: parseFloat(newListing.price),
+                    agentId: userId,
+                });
+                setNewListing({ address: '', price: '', status: 'For Sale', type: 'House' });
+            };
+
+            return (
+                <form onSubmit={handleSubmit} className="p-6 space-y-4 card">
+                    <h3 className="text-xl font-semibold text-gray-800 border-b pb-2">Create New Listing</h3>
+                    <div className="input-group">
+                        <label className="text-sm font-medium text-gray-700">Address</label>
+                        <input type="text" name="address" value={newListing.address} onChange={handleChange} required />
+                    </div>
+                    <div className="input-group">
+                        <label className="text-sm font-medium text-gray-700">Price (USD)</label>
+                        <input type="number" name="price" value={newListing.price} onChange={handleChange} required min="1000" />
+                    </div>
+                    <div className="grid grid-cols-2 gap-4">
+                        <div className="input-group">
+                            <label className="text-sm font-medium text-gray-700">Type</label>
+                            <select name="type" value={newListing.type} onChange={handleChange}>
+                                {PROPERTY_TYPES.map(type => <option key={type} value={type}>{type}</option>)}
+                            </select>
+                        </div>
+                        <div className="input-group">
+                            <label className="text-sm font-medium text-gray-700">Status</label>
+                            <select name="status" value={newListing.status} onChange={handleChange}>
+                                {LISTING_STATUSES.map(status => <option key={status} value={status}>{status}</option>)}
+                            </select>
+                        </div>
+                    </div>
+                    <button type="submit" className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2.5 rounded-lg transition">
+                        Publish Listing
+                    </button>
+                </form>
+            );
+        };
+
+
+        // --- Component: Linking View (Modal Content) ---
+
+        const ListingLinker = ({ selectedClient, listings, handleUpdateDoc, userId, onClose }) => {
+            const availableListings = listings.filter(l => l.agentId === userId && l.status === 'For Sale');
+            const [selectedListingId, setSelectedListingId] = useState('');
+
+            const handleLink = async (e) => {
+                e.preventDefault();
+                const listingToLink = availableListings.find(l => l.id === selectedListingId);
+                
+                if (listingToLink && selectedClient) {
+                    const newLinkedProperty = {
+                        id: listingToLink.id,
+                        address: listingToLink.address,
+                        price: listingToLink.price,
+                    };
+                    
+                    const currentLinks = selectedClient.linkedListings || [];
+                    const updatedLinks = [...currentLinks, newLinkedProperty];
+
+                    await handleUpdateDoc(getPrivateCollectionPath(userId, 'clients'), selectedClient.id, {
+                        linkedListings: updatedLinks,
+                    });
+                    
+                    onClose();
+                }
+            };
+            
+            return (
+                <div className="space-y-4">
+                    <p className="text-gray-600">Linking property to: <strong className="text-indigo-600">{selectedClient.name}</strong></p>
+                    <form onSubmit={handleLink} className="space-y-4">
+                        <div className="input-group">
+                            <label className="text-sm font-medium text-gray-700">Select Listing</label>
+                            <select value={selectedListingId} onChange={(e) => setSelectedListingId(e.target.value)} required>
+                                <option value="" disabled>-- Select a Listing --</option>
+                                {availableListings.map(listing => (
+                                    <option key={listing.id} value={listing.id}>
+                                        {listing.address} ({formatPrice(listing.price)})
+                                    </option>
+                                ))}
+                            </select>
+                        </div>
+                        <button type="submit" disabled={!selectedListingId} className="w-full bg-indigo-500 hover:bg-indigo-600 text-white font-bold py-2.5 rounded-lg transition disabled:opacity-50">
+                            Confirm Link
+                        </button>
+                    </form>
+                    
+                    <div className="mt-6 pt-4 border-t border-gray-100">
+                        <h4 className="font-semibold text-gray-700 mb-2">Currently Linked:</h4>
+                        <ul className="text-sm space-y-1">
+                            {selectedClient.linkedListings && selectedClient.linkedListings.length > 0 ? (
+                                selectedClient.linkedListings.map((link, index) => (
+                                    <li key={index} className="flex justify-between items-center p-2 bg-gray-50 rounded-md">
+                                        <span>{link.address}</span>
+                                        <span className="font-medium">{formatPrice(link.price)}</span>
+                                    </li>
+                                ))
+                            ) : (
+                                <li className="text-gray-500">No properties linked yet.</li>
+                            )}
+                        </ul>
+                    </div>
+                </div>
+            );
+        };
+
+
+        // --- Component: Agent Dashboard View ---
+
+        const AgentDashboard = ({ userId, db, clients, listings, handlers, state }) => {
+             const myActiveListings = useMemo(() => listings.filter(l => l.agentId === userId && l.status === 'For Sale'), [listings, userId]);
+             const mySoldListings = useMemo(() => listings.filter(l => l.agentId === userId && l.status === 'Sold'), [listings, userId]);
+             const leads = useMemo(() => clients.filter(c => c.status === 'New Lead'), [clients]);
+             const activeClients = useMemo(() => clients.filter(c => c.status === 'Active Buyer'), [clients]);
+
+            return (
+                <div className="space-y-8">
+                    <div className="card p-6 bg-white border-l-8 border-indigo-500">
+                        <h2 className="text-3xl font-extrabold text-gray-900 mb-1">Agent Workspace</h2>
+                        <p className="text-gray-500">Manage your pipeline, clients, and properties.</p>
+                        <p className="text-xs text-gray-400 mt-3">Your ID: <span className="font-mono text-gray-600">{userId}</span></p>
+                    </div>
+
+                    {/* Stats Summary */}
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+                        <div className="card p-5 bg-indigo-50 border-indigo-300">
+                            <p className="text-gray-500">Active Clients</p>
+                            <h3 className="text-3xl font-bold text-indigo-700">{activeClients.length}</h3>
+                        </div>
+                        <div className="card p-5 bg-emerald-50 border-emerald-300">
+                            <p className="text-gray-500">Active Listings</p>
+                            <h3 className="text-3xl font-bold text-emerald-700">{myActiveListings.length}</h3>
+                        </div>
+                        <div className="card p-5 bg-amber-50 border-amber-300">
+                            <p className="text-gray-500">New Leads</p>
+                            <h3 className="text-3xl font-bold text-amber-700">{leads.length}</h3>
+                        </div>
+                        <div className="card p-5 bg-red-50 border-red-300">
+                            <p className="text-gray-500">Properties Sold</p>
+                            <h3 className="text-3xl font-bold text-red-700">{mySoldListings.length}</h3>
+                        </div>
+                    </div>
+                    
+                    {/* Clients and Listings Sections */}
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                        {/* Clients Column */}
+                        <div className="lg:col-span-2 space-y-6">
+                            <h3 className="text-2xl font-bold text-gray-800 border-b pb-2">My Clients ({clients.length})</h3>
+                            <AddClientForm 
+                                newClient={state.newClient} 
+                                setNewClient={state.setNewClient} 
+                                handleAddDoc={handlers.handleAddDoc} 
+                                userId={userId} 
+                                db={db}
+                            />
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                {clients.map(client => (
+                                    <ClientCard 
+                                        key={client.id} 
+                                        client={client} 
+                                        userId={userId} 
+                                        db={db} 
+                                        handleDeleteDoc={handlers.handleDeleteDoc}
+                                        handleUpdateDoc={handlers.handleUpdateDoc}
+                                        setSelectedClient={state.setSelectedClient}
+                                        setIsLinkingModalOpen={state.setIsLinkingModalOpen}
+                                    />
+                                ))}
+                            </div>
+                        </div>
+
+                        {/* Listings Column */}
+                        <div className="space-y-6">
+                            <h3 className="text-2xl font-bold text-gray-800 border-b pb-2">My Listings ({myActiveListings.length})</h3>
+                            <AddListingForm 
+                                newListing={state.newListing} 
+                                setNewListing={state.setNewListing} 
+                                handleAddDoc={handlers.handleAddDoc} 
+                                userId={userId} 
+                                db={db}
+                            />
+                            <div className="space-y-4">
+                                {myActiveListings.map(listing => (
+                                    <ListingCard 
+                                        key={listing.id} 
+                                        listing={listing} 
+                                        userId={userId} 
+                                        db={db} 
+                                        handleDeleteDoc={handlers.handleDeleteDoc}
+                                        handleUpdateDoc={handlers.handleUpdateDoc}
+                                        isAgent={true}
+                                    />
+                                ))}
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Linking Modal */}
+                    {state.isLinkingModalOpen && state.selectedClient && (
+                        <LinkingModal title="Link Property to Client" onClose={() => state.setIsLinkingModalOpen(false)}>
+                            <ListingLinker 
+                                selectedClient={state.selectedClient} 
+                                listings={listings} 
+                                handleUpdateDoc={handlers.handleUpdateDoc} 
+                                userId={userId} 
+                                onClose={() => state.setIsLinkingModalOpen(false)}
+                            />
+                        </LinkingModal>
+                    )}
+                </div>
+            );
+        };
+
+
+        // --- Component: Buyer Dashboard View ---
+        
+        const BuyerDashboard = ({ listings }) => {
+            const [searchTerm, setSearchTerm] = useState('');
+
+            const filteredListings = useMemo(() => {
+                const term = searchTerm.toLowerCase();
+                return listings.filter(l => 
+                    l.address.toLowerCase().includes(term) || 
+                    l.type.toLowerCase().includes(term)
+                );
+            }, [listings, searchTerm]);
+
+            return (
+                <div className="space-y-6">
+                    <div className="card p-6 bg-white border-l-8 border-purple-500">
+                        <h2 className="text-3xl font-extrabold text-gray-900 mb-1">Buyer Property Explorer</h2>
+                        <p className="text-gray-500">Browse all available listings from agents and owners.</p>
+                    </div>
+
+                    <div className="input-group relative">
+                        <input 
+                            type="text" 
+                            placeholder="Search by address or property type..." 
+                            value={searchTerm} 
+                            onChange={(e) => setSearchTerm(e.target.value)}
+                            className="pl-10"
+                        />
+                        <Icon path="M15.75 15.75l-4.242-4.242m0 0L6 10.5M10.5 10.5a.75.75 0 100-1.5.75.75 0 000 1.5zM12.75 12.75a.75.75 0 100-1.5.75.75 0 000 1.5z" className="w-5 h-5 absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
+                    </div>
+
+                    <h3 className="text-2xl font-bold text-gray-800 border-b pb-2">Available Properties ({filteredListings.length})</h3>
+                    
+                    {filteredListings.length > 0 ? (
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                            {filteredListings.filter(l => l.status === 'For Sale').map(listing => (
+                                <ListingCard key={listing.id} listing={listing} isAgent={false} />
+                            ))}
+                        </div>
+                    ) : (
+                        <div className="p-10 text-center bg-gray-100 rounded-xl text-gray-500">
+                            No active listings match your criteria.
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+
+        // --- Component: Owner Dashboard View ---
+
+        const OwnerDashboard = ({ userId, db, listings, handlers, state }) => {
+            const myActiveListings = useMemo(() => listings.filter(l => l.agentId === userId && l.status === 'For Sale'), [listings, userId]);
+            const myInactiveListings = useMemo(() => listings.filter(l => l.agentId === userId && l.status !== 'For Sale'), [listings, userId]);
+
+            return (
+                 <div className="space-y-6">
+                    <div className="card p-6 bg-white border-l-8 border-orange-500">
+                        <h2 className="text-3xl font-extrabold text-gray-900 mb-1">Owner Listing Manager</h2>
+                        <p className="text-gray-500">List and manage your properties directly.</p>
+                        <p className="text-xs text-gray-400 mt-3">Your ID: <span className="font-mono text-gray-600">{userId}</span></p>
+                    </div>
+
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                        {/* Add Listing Column */}
+                        <div className="lg:col-span-1">
+                            <AddListingForm 
+                                newListing={state.newListing} 
+                                setNewListing={state.setNewListing} 
+                                handleAddDoc={handlers.handleAddDoc} 
+                                userId={userId} 
+                                db={db}
+                            />
+                        </div>
+
+                        {/* Active Listings Column */}
+                        <div className="lg:col-span-2 space-y-4">
+                            <h3 className="text-2xl font-bold text-gray-800 border-b pb-2">Active Listings ({myActiveListings.length})</h3>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                {myActiveListings.map(listing => (
+                                    <ListingCard 
+                                        key={listing.id} 
+                                        listing={listing} 
+                                        userId={userId} 
+                                        db={db} 
+                                        handleDeleteDoc={handlers.handleDeleteDoc}
+                                        handleUpdateDoc={handlers.handleUpdateDoc}
+                                        isAgent={true}
+                                    />
+                                ))}
+                            </div>
+
+                             <h3 className="text-xl font-bold text-gray-700 border-b pb-2 mt-6">Inactive/Sold Listings ({myInactiveListings.length})</h3>
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 opacity-70">
+                                {myInactiveListings.map(listing => (
+                                    <ListingCard 
+                                        key={listing.id} 
+                                        listing={listing} 
+                                        userId={userId} 
+                                        db={db} 
+                                        handleDeleteDoc={handlers.handleDeleteDoc}
+                                        handleUpdateDoc={handlers.handleUpdateDoc}
+                                        isAgent={true}
+                                    />
+                                ))}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+
+        // --- Component: Role Selector View ---
+        
+        const RoleSelector = ({ setActiveRole }) => (
+            <div className="max-w-md mx-auto card p-8 text-center mt-20">
+                <Icon path="M21 12.75l-4.75 2.25M21 12.75l-4.75-2.25M21 12.75h-3.75M16.25 10.5V9.75M16.25 15V15.75" className="w-12 h-12 text-indigo-500 mx-auto mb-4" />
+                <h1 className="text-3xl font-bold text-gray-800 mb-4">Property Portal Access</h1>
+                <p className="text-gray-600 mb-8">Select your user type to access the correct dashboard.</p>
+                <div className="space-y-4">
+                    <button onClick={() => setActiveRole('Agent')} className="w-full flex items-center justify-center p-4 bg-indigo-600 text-white rounded-xl shadow-lg hover:bg-indigo-700 transition">
+                        <Icon path="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.5 19.5a.75.75 0 01.75-.75h14.5a.75.75 0 01.75.75V21H4.5v-1.5z" className="w-5 h-5 mr-2" />
+                        Real Estate Agent
+                    </button>
+                    <button onClick={() => setActiveRole('Owner')} className="w-full flex items-center justify-center p-4 bg-orange-600 text-white rounded-xl shadow-lg hover:bg-orange-700 transition">
+                         <Icon path="M2.25 12l8.954-8.955c.44-.439 1.152-.439 1.591 0L21.75 12M4.5 9.75v10.5a1.5 1.5 0 001.5 1.5h12a1.5 1.5 0 001.5-1.5V9.75m-7.5 10.5V12" className="w-5 h-5 mr-2" />
+                        Property Owner
+                    </button>
+                    <button onClick={() => setActiveRole('Buyer')} className="w-full flex items-center justify-center p-4 bg-purple-600 text-white rounded-xl shadow-lg hover:bg-purple-700 transition">
+                         <Icon path="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" className="w-5 h-5 mr-2" />
+                        Prospective Buyer
+                    </button>
+                </div>
+            </div>
+        );
+
+
+        // --- Main Application Component ---
+
+        const App = () => {
+            const { db, userId, isAuthReady } = useFirebase();
+            const [activeRole, setActiveRole] = useState(null); // Starts at RoleSelector
+            
+            // Data States
+            const [listings, setListings] = useState([]);
+            const [clients, setClients] = useState([]);
+            
+            // Form States (Passed down to forms)
+            const [newListing, setNewListing] = useState({ address: '', price: '', status: 'For Sale', type: 'House' });
+            const [newClient, setNewClient] = useState({ name: '', email: '', phone: '', status: 'New Lead' });
+            
+            // Modal/UI States
+            const [isLinkingModalOpen, setIsLinkingModalOpen] = useState(false);
+            const [selectedClient, setSelectedClient] = useState(null);
+            const [message, setMessage] = useState(null); // For custom messages/alerts
+
+
+            // --- Utility Functions (Passed down to components) ---
+
+            const handleUpdateDoc = useCallback(async (collectionPath, id, data) => {
+                if (!db || !userId) {
+                    setMessage({ type: 'error', text: 'Database or user not initialized.' });
+                    return;
+                }
+                try {
+                    const docRef = doc(db, collectionPath, id);
+                    await updateDoc(docRef, data);
+                    setMessage({ type: 'success', text: 'Document updated successfully.' });
+                } catch (e) {
+                    console.error(`Error updating document in ${collectionPath}: `, e);
+                    setMessage({ type: 'error', text: `Failed to update: ${e.message}` });
+                }
+            }, [db, userId]);
+
+            const handleDeleteDoc = useCallback(async (collectionPath, id) => {
+                if (!db || !userId) {
+                    setMessage({ type: 'error', text: 'Database or user not initialized.' });
+                    return;
+                }
+                try {
+                    await deleteDoc(doc(db, collectionPath, id));
+                    setMessage({ type: 'success', text: 'Document deleted successfully.' });
+                } catch (e) {
+                    console.error(`Error deleting document in ${collectionPath}: `, e);
+                    setMessage({ type: 'error', text: `Failed to delete: ${e.message}` });
+                }
+            }, [db, userId]);
+
+            const handleAddDoc = useCallback(async (collectionPath, data) => {
+                if (!db || !userId) {
+                    setMessage({ type: 'error', text: 'Database or user not initialized.' });
+                    return null;
+                }
+                try {
+                    const docRef = await addDoc(collection(db, collectionPath), {
+                        ...data,
+                        createdAt: serverTimestamp(), // Use Firestore server timestamp
+                    });
+                    setMessage({ type: 'success', text: 'Document added successfully.' });
+                    return docRef;
+                } catch (e) {
+                    console.error(`Error adding document to ${collectionPath}: `, e);
+                    setMessage({ type: 'error', text: `Failed to add document: ${e.message}` });
+                    return null;
+                }
+            }, [db, userId]);
+
+
+            // --- Data Fetching Listeners ---
+            useEffect(() => {
+                if (!isAuthReady || !db) return;
+
+                // 1. Listings (Public & Shared)
+                const listingsRef = collection(db, getPublicCollectionPath('listings'));
+                const unsubscribeListings = onSnapshot(listingsRef, (snapshot) => {
+                    const fetchedListings = snapshot.docs.map(doc => ({
+                        id: doc.id,
+                        ...doc.data()
+                    }));
+                    // Sort by creation date descending (in memory)
+                    fetchedListings.sort((a, b) => (b.createdAt?.toMillis() || 0) - (a.createdAt?.toMillis() || 0));
+                    setListings(fetchedListings);
+                }, (error) => {
+                    console.error("Error listening to listings:", error);
+                });
+
+                // 2. Clients (Private & User-Specific - only needed for Agent role)
+                let unsubscribeClients = () => {};
+                if (userId) {
+                    const clientsRef = collection(db, getPrivateCollectionPath(userId, 'clients'));
+                    // Note: The Firestore security rules ensure only the owner can read/write this.
+                    unsubscribeClients = onSnapshot(clientsRef, (snapshot) => {
+                        const fetchedClients = snapshot.docs.map(doc => ({
+                            id: doc.id,
+                            ...doc.data()
+                        }));
+                        setClients(fetchedClients);
+                    }, (error) => {
+                        console.error("Error listening to clients:", error);
+                    });
+                }
+                
+                return () => {
+                    unsubscribeListings();
+                    unsubscribeClients();
+                };
+            }, [isAuthReady, db, userId]);
+            // userId dependency ensures the clients listener correctly attaches after sign-in
+
+
+            if (!isAuthReady) {
+                return <LoadingOverlay />;
+            }
+
+            const handlers = { handleUpdateDoc, handleDeleteDoc, handleAddDoc, setMessage };
+            const state = { newListing, setNewListing, newClient, setNewClient, isLinkingModalOpen, setIsLinkingModalOpen, selectedClient, setSelectedClient };
+
+
+            let content;
+            if (activeRole === 'Agent') {
+                content = <AgentDashboard userId={userId} db={db} clients={clients} listings={listings} handlers={handlers} state={state} />;
+            } else if (activeRole === 'Owner') {
+                content = <OwnerDashboard userId={userId} db={db} listings={listings} handlers={handlers} state={state} />;
+            } else if (activeRole === 'Buyer') {
+                content = <BuyerDashboard userId={userId} db={db} listings={listings.filter(l => l.agentId && l.status !== 'Sold')} />; // Filter out listings without an agentId and those sold
+            } else {
+                content = <RoleSelector setActiveRole={setActiveRole} />;
+            }
+
+            return (
+                <div className="container mx-auto p-4 md:p-8 relative">
+                    {content}
+                    <MessageToast message={message} setMessage={setMessage} />
+                </div>
+            );
+        };
+
+        // Render the application
+        const container = document.getElementById('root');
+        const root = ReactDOM.createRoot(container);
+        root.render(<App />);
+        window.firebaseInitialized = true;
+    }
+    </script>
+</body>
+</html>
