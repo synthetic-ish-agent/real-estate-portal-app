@@ -16,24 +16,40 @@
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, query, onSnapshot, addDoc, updateDoc, doc, deleteDoc, getDocs, setLogLevel, serverTimestamp, where } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         
+        // --- HARDCODED CONFIG FOR GITHUB PAGES DEPLOYMENT ---
+        // This object ensures the app can connect when running outside the Canvas environment.
+        const productionConfig = {
+            apiKey: "AIzaSyDYu7GOXys7rwc8pLQZ5ClL0cYpiaFgE5Q",
+            authDomain: "myapp-5c8d2.firebaseapp.com",
+            projectId: "myapp-5c8d2",
+            storageBucket: "myapp-5c8d2.firebasestorage.app",
+            messagingSenderId: "478118266629",
+            appId: "1:478118266629:web:2be0c53ad500f46723996c",
+            measurementId: "G-Y6Q6RWYXYE"
+        };
+        // ----------------------------------------------------
+
         // Set log level for debugging
         setLogLevel('Debug');
 
-        // Expose Firebase functions globally for use in the Babel script block
+        // 1. Determine the configuration object: Use Canvas variable if available, otherwise use hardcoded config.
+        const firebaseConfig = (typeof __firebase_config !== 'undefined' && __firebase_config.length > 5)
+            ? JSON.parse(__firebase_config)
+            : productionConfig;
+
+        // 2. Determine App ID and Auth Token. Use project ID as a reliable default for appId if needed.
+        window.__app_id = typeof __app_id !== 'undefined' ? __app_id : firebaseConfig.projectId;
+        window.__firebase_config_obj = firebaseConfig; // Expose the actual config object
+        window.__initial_auth_token = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        // 3. Initialize Firebase
+        initializeApp(firebaseConfig);
+
+        // 4. Expose Firebase functions globally for use in the Babel script block
         window.firebase = {
             initializeApp, getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged,
             getFirestore, collection, query, onSnapshot, addDoc, updateDoc, doc, deleteDoc, getDocs, serverTimestamp, where
         };
-
-        // Global variables provided by the environment
-        window.__app_id = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-        window.__firebase_config = typeof __firebase_config !== 'undefined' ? __firebase_config : '{}';
-        window.__initial_auth_token = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
-
-        const firebaseConfig = JSON.parse(window.__firebase_config);
-        if (Object.keys(firebaseConfig).length) {
-            initializeApp(firebaseConfig);
-        }
     </script>
 </head>
 <body class="bg-gray-50 min-h-screen font-sans antialiased">
@@ -71,15 +87,6 @@
 
         // Placeholder for required global variables from the Canvas environment
         const appId = window.__app_id;
-        const firebaseConfig = {
-  apiKey: "AIzaSyDYu7GOXys7rwc8pLQZ5ClL0cYpiaFgE5Q",
-  authDomain: "myapp-5c8d2.firebaseapp.com",
-  projectId: "myapp-5c8d2",
-  storageBucket: "myapp-5c8d2.firebasestorage.app",
-  messagingSenderId: "478118266629",
-  appId: "1:478118266629:web:2be0c53ad500f46723996c",
-  measurementId: "G-Y6Q6RWYXYE"
-};
         const initialAuthToken = window.__initial_auth_token;
 
         // Helper function to handle Firestore path generation for collections
@@ -874,3 +881,4 @@
 </body>
 
 </html>
+
