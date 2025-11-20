@@ -71,7 +71,15 @@
 
         // Placeholder for required global variables from the Canvas environment
         const appId = window.__app_id;
-        const firebaseConfig = JSON.parse(window.__firebase_config);
+        const firebaseConfig = {
+  apiKey: "AIzaSyDYu7GOXys7rwc8pLQZ5ClL0cYpiaFgE5Q",
+  authDomain: "myapp-5c8d2.firebaseapp.com",
+  projectId: "myapp-5c8d2",
+  storageBucket: "myapp-5c8d2.firebasestorage.app",
+  messagingSenderId: "478118266629",
+  appId: "1:478118266629:web:2be0c53ad500f46723996c",
+  measurementId: "G-Y6Q6RWYXYE"
+};
         const initialAuthToken = window.__initial_auth_token;
 
         // Helper function to handle Firestore path generation for collections
@@ -864,4 +872,5 @@
     }
     </script>
 </body>
+
 </html>
