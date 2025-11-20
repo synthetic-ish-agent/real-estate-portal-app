@@ -58,10 +58,10 @@
     <script type="text/babel">
         const { useState, useEffect, useMemo, useCallback } = React;
         const { 
-            initializeApp, getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged,
+            getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged,
             getFirestore, collection, query, onSnapshot, addDoc, updateDoc, doc, deleteDoc, getDocs, serverTimestamp, where
         } = window.firebase;
-
+        
         // --- CONFIGURATION CONSTANTS (Must be defined globally for the app) ---
         const LISTING_STATUSES = ['For Sale', 'Pending', 'Sold', 'Rented'];
         const CLIENT_STATUSES = ['New Lead', 'Active Buyer', 'Viewing Properties', 'Offer Submitted', 'Closed'];
@@ -881,4 +881,5 @@
 </body>
 
 </html>
+
 
